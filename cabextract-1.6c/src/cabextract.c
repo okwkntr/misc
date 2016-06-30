@@ -190,6 +190,36 @@ struct cabextract_args args = {
   NULL, NULL
 };
 
+int cabxbuf_open(FILE *fh);
+void cabxbuf_close();
+int cabxbuf_read(void *, int);
+int cabxbuf_seek(off_t, int);
+int cabxbuf_tell();
+
+#ifdef DEBUG
+#define debug printf
+#else
+#define debug 1 ? (void) 0 : printf
+#endif /* DEBUG */
+#define DATA_SIZE 256
+#define IS_STDIN(fname) (strncmp((fname), "/dev/stdin", 10) == 0 || \
+                         strncmp((fname), "-", 1) == 0)
+
+typedef struct cabx_data {
+  char data[DATA_SIZE];
+  size_t len;
+  struct cabx_data *next;
+} cabx_data_t;
+
+typedef struct cabx_buf {
+  cabx_data_t *head;
+  cabx_data_t *current;
+  size_t size;
+  off_t offset;
+} cabx_buf_t;
+
+cabx_buf_t g_cabxbuf = {0};
+/* okawa */
 
 /** A special filename. Extracting to this filename will send the output
  * to standard output instead of a file on disk. The magic happens in
@@ -306,7 +336,7 @@ int main(int argc, char *argv[]) {
   if (optind == argc) {
     /* no arguments other than the options */
     if (args.view) {
-      printf("cabextract version %s\n", VERSION);
+      printf("cabextract(custom) version %s\n", VERSION);
       return 0;
     }
     else {
@@ -371,6 +401,9 @@ int main(int argc, char *argv[]) {
   forget_files(&cab_exts);
   forget_files(&cab_seen);
 
+  /* close stdin buffer */
+  cabxbuf_close();
+
   return err ? EXIT_FAILURE : EXIT_SUCCESS;
 }
 
@@ -423,9 +456,11 @@ static int process_cabinet(char *basename) {
     /* print headers */
     if (!viewhdr) {
       if (args.view) {
-        if (!args.quiet) printf("Viewing cabinet: %s\n", basename);
-        printf(" File size | Date       Time     | Name\n");
-        printf("-----------+---------------------+-------------\n");
+        if (!args.quiet) {
+          printf("Viewing cabinet: %s\n", basename);
+          printf(" File size | Date       Time     | Name\n");
+          printf("-----------+---------------------+-------------\n");
+        }
       }
       else {
         if (!args.quiet) {
@@ -465,9 +500,13 @@ static int process_cabinet(char *basename) {
 
       /* view, extract or test the file */
       if (args.view) {
-        printf("%10u | %02d.%02d.%04d %02d:%02d:%02d | %s\n",
-               file->length, file->date_d, file->date_m, file->date_y,
-               file->time_h, file->time_m, file->time_s, name);
+        if (args.quiet) {
+          printf("%s\n", name);
+        } else {
+          printf("%10u | %02d.%02d.%04d %02d:%02d:%02d | %s\n",
+                 file->length, file->date_d, file->date_m, file->date_y,
+                 file->time_h, file->time_m, file->time_s, name);
+        }
       }
       else if (args.test) {
         if (cabd->extract(cabd, file, TEST_FNAME)) {
@@ -1071,6 +1110,7 @@ static struct mspack_file *cabx_open(struct mspack_system *this,
   default: return NULL;
   }
 
+  debug("open:%s,%d\n", filename, IS_STDIN(filename));
   if ((fh = malloc(sizeof(struct mspack_file_p)))) {
     fh->name = filename;
 
@@ -1084,6 +1124,13 @@ static struct mspack_file *cabx_open(struct mspack_system *this,
       fh->fh = NULL;
       md5_init_ctx(&md5_context);
       return (struct mspack_file *) fh;
+    }
+    else if (IS_STDIN(filename)) {
+      fh->regular_file = 0;
+      fh->fh = stdin;
+      if (cabxbuf_open(fh->fh) == 0) {
+        return (struct mspack_file *) fh;
+      }
     }
     else {
       /* regular file - simply attempt to open it */
@@ -1103,7 +1150,7 @@ static void cabx_close(struct mspack_file *file) {
   if (this) {
     if (this->name == TEST_FNAME) {
       md5_finish_ctx(&md5_context, (void *) &md5_result);
-    }
+    } 
     else if (this->regular_file) {
       fclose(this->fh);
     }
@@ -1113,9 +1160,13 @@ static void cabx_close(struct mspack_file *file) {
 
 static int cabx_read(struct mspack_file *file, void *buffer, int bytes) {
   struct mspack_file_p *this = (struct mspack_file_p *) file;
+  if (this && IS_STDIN(this->name)){
+    return cabxbuf_read(buffer, bytes);
+  }
   if (this && this->regular_file && buffer && bytes >= 0) {
     size_t count = fread(buffer, 1, (size_t) bytes, this->fh);
     if (!ferror(this->fh)) return (int) count;
+
   }
   return -1;
 }
@@ -1138,6 +1189,9 @@ static int cabx_write(struct mspack_file *file, void *buffer, int bytes) {
 
 static int cabx_seek(struct mspack_file *file, off_t offset, int mode) {
   struct mspack_file_p *this = (struct mspack_file_p *) file;
+  if (this && IS_STDIN(this->name)) {
+    return cabxbuf_seek(offset, mode);
+  }
   if (this && this->regular_file) {
     switch (mode) {
     case MSPACK_SYS_SEEK_START: mode = SEEK_SET; break;
@@ -1156,6 +1210,9 @@ static int cabx_seek(struct mspack_file *file, off_t offset, int mode) {
 
 static off_t cabx_tell(struct mspack_file *file) {
   struct mspack_file_p *this = (struct mspack_file_p *) file;
+  if (this && IS_STDIN(this->name)) {
+    return cabxbuf_tell();
+  }
 #if HAVE_FSEEKO
   return (this && this->regular_file) ? (off_t) ftello(this->fh) : 0;
 #else
@@ -1182,4 +1239,131 @@ static void cabx_free(void *buffer) {
 }
 static void cabx_copy(void *src, void *dest, size_t bytes) {
   memcpy(dest, src, bytes);
+}
+
+int
+cabxbuf_open(FILE *fh)
+{
+  size_t total = 0;
+  cabx_data_t *data, *pdata;
+
+  if (g_cabxbuf.head != NULL)
+    return 0;
+
+  for(;;) {
+    data = malloc(sizeof(cabx_data_t));
+    if (data == NULL) {
+      cabxbuf_close();
+      return -1;
+    }
+    memset(data, 0, sizeof(cabx_data_t));
+    data->len = fread(data->data, 1, DATA_SIZE, fh);
+
+    debug("cabxbuf_open: len=%d\n", data->len);
+
+    total += data->len;
+    if (g_cabxbuf.head == NULL)
+      g_cabxbuf.head = data;
+    else 
+      pdata->next = data;
+    if (data->len < DATA_SIZE)
+      break;
+    pdata = data;
+  }
+  g_cabxbuf.size = total;
+  g_cabxbuf.offset = 0;
+  g_cabxbuf.current = g_cabxbuf.head;
+  return 0;
+}
+
+void
+cabxbuf_close()
+{
+  if (g_cabxbuf.head == NULL)
+    return;
+
+  cabx_data_t *data, *next;
+  data = g_cabxbuf.head;
+  for(;;) {
+    if (data->next == NULL)
+      break;
+    next = data->next;
+    free(data);
+    data = next;
+  }
+}
+
+int
+cabxbuf_read(void *buf, int bytes)
+{
+  volatile off_t current;
+  int tmpsize = bytes, readsize, total = 0;
+  void *pos = buf;
+  cabx_data_t *data = g_cabxbuf.current;
+
+  current = g_cabxbuf.offset % DATA_SIZE;
+  debug("read start:current=%d, data='%s'\n", 
+      (int)current, (char *)data->data);
+
+  while (tmpsize > 0 && data != NULL) {
+    if (current + tmpsize >= data->len) {
+      readsize = data->len - current;
+    } else {
+      readsize = tmpsize < data->len ? tmpsize : data->len;
+    }
+    memcpy(pos, (void *)data->data + current, (size_t)readsize);
+    if (current + tmpsize >= data->len) {
+      current = 0;
+      data = data->next;
+    }
+    tmpsize -= readsize;
+    pos += readsize;
+    total += readsize;
+  }
+  g_cabxbuf.offset += total;
+  g_cabxbuf.current = data;
+  debug("read end:%d:%d:%d\n", bytes, tmpsize, total);
+  return total;
+}
+
+int
+cabxbuf_seek(off_t offset, int mode)
+{
+  off_t count, rest;
+  cabx_data_t *data;
+  switch (mode) {
+    case SEEK_SET: 
+      break;
+    case SEEK_CUR:
+      offset += g_cabxbuf.offset;
+      break;
+    case SEEK_END:
+      offset = g_cabxbuf.size;
+      break;
+    default: return -1;
+  }
+  if (offset <= 0) {
+    offset = 0;
+    data = g_cabxbuf.head;
+  } else if (offset >= g_cabxbuf.size) {
+    offset = g_cabxbuf.size;
+    data = g_cabxbuf.head;
+    while (data->next != NULL)
+      data = data->next;
+  } else {
+    count = offset / DATA_SIZE;
+    data = g_cabxbuf.head;
+
+    while (count-- > 0)
+      data = data->next;
+  }
+  g_cabxbuf.current = data;
+  g_cabxbuf.offset = offset;
+  return 0;
+}
+
+int
+cabxbuf_tell()
+{
+  return g_cabxbuf.offset;
 }

@@ -1,3 +1,7 @@
+2016-06-29  okwkntr 
+	* cabextract.c and other: Add cabxbuf_xxx for allow to read from
+	stdin. Not to show some messages with -q option.
+
 2015-02-25  Stuart Caie <kyzer@4u.net>
 
 	* create_output_name(): Simplify code; do path checking only after
