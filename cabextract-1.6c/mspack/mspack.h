@@ -701,6 +701,7 @@ struct mscabd_cabinet {
    * list.
    */
   struct mscabd_cabinet *next;
+  struct mscabd_cabinet *prev;
 
   /**
    * The filename of the cabinet. More correctly, the filename of the

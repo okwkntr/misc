@@ -161,6 +161,7 @@ struct option optlist[] = {
   { "single",    0, NULL, 's' },
   { "test",      0, NULL, 't' },
   { "version",   0, NULL, 'v' },
+  { "stdin-fname",   0, NULL, 'n' },
   { NULL,        0, NULL, 0   }
 };
 
@@ -173,7 +174,7 @@ struct file_mem {
 
 struct cabextract_args {
   int help, lower, pipe, view, quiet, single, fix, test;
-  char *dir, *filter;
+  char *dir, *filter, *stdin_fname;
 };
 
 /* global variables */
@@ -187,7 +188,7 @@ mode_t user_umask;
 
 struct cabextract_args args = {
   0, 0, 0, 0, 0, 0, 0, 0,
-  NULL, NULL
+  NULL, NULL, NULL
 };
 
 int cabxbuf_open(FILE *fh);
@@ -248,6 +249,9 @@ static int process_cabinet(char *cabname);
 static void load_spanning_cabinets(struct mscabd_cabinet *basecab,
                                    char *basename);
 static char *find_cabinet_file(char *origcab, char *cabname);
+static struct mscabd_cabinet *find_cabinet_from_list(
+    struct mscabd_cabinet *basecab, char *basename, 
+    int reverse_flag);
 static int unix_path_seperators(struct mscabd_file *files);
 static char *create_output_name(const char *fname, const char *dir,
                                 int lower, int isunix, int unicode);
@@ -285,7 +289,7 @@ int main(int argc, char *argv[]) {
   int i, err;
 
   /* parse options */
-  while ((i = getopt_long(argc, argv, "d:fF:hlLpqstv", optlist, NULL)) != -1) {
+  while ((i = getopt_long(argc, argv, "d:fF:hlLpqstvn:", optlist, NULL)) != -1) {
     switch (i) {
     case 'd': args.dir    = optarg; break;
     case 'f': args.fix    = 1;      break;
@@ -298,6 +302,7 @@ int main(int argc, char *argv[]) {
     case 's': args.single = 1;      break;
     case 't': args.test   = 1;      break;
     case 'v': args.view   = 1;      break;
+    case 'n': args.stdin_fname = optarg; break;
     }
   }
 
@@ -321,6 +326,7 @@ int main(int argc, char *argv[]) {
       "  -s   --single      restrict search to cabs on the command line\n"
       "  -F   --filter      extract only files that match the given pattern\n"
       "  -d   --directory   extract all files to the given directory\n\n"
+      "  -n   --stdin-fname name of cabfile which from stdin\n\n"
       "cabextract %s (C) 2000-2011 Stuart Caie <kyzer@4u.net>\n"
       "This is free software with ABSOLUTELY NO WARRANTY.\n",
       VERSION);
@@ -565,8 +571,10 @@ static int process_cabinet(char *basename) {
     } /* for (all files in cab) */
 
     /* free the spanning cabinet filenames [not freed by cabd->close()] */
-    for (cab2 = cab->prevcab; cab2; cab2 = cab2->prevcab) free((void*)cab2->filename);
-    for (cab2 = cab->nextcab; cab2; cab2 = cab2->nextcab) free((void*)cab2->filename);
+    if (!IS_STDIN(basename)) {
+      for (cab2 = cab->prevcab; cab2; cab2 = cab2->prevcab) free((void*)cab2->filename);
+      for (cab2 = cab->nextcab; cab2; cab2 = cab2->nextcab) free((void*)cab2->filename);
+    }
   } /* for (all cabs) */
 
   /* free all loaded cabinets */
@@ -587,20 +595,42 @@ static void load_spanning_cabinets(struct mscabd_cabinet *basecab,
                                    char *basename)
 {
   struct mscabd_cabinet *cab, *cab2;
-  char *name;
+  char *name, *tname;
 
   /* load any spanning cabinets -- backwards */
+  tname = args.stdin_fname;
   for (cab = basecab; cab->flags & MSCAB_HDR_PREVCAB; cab = cab->prevcab) {
-    if (!(name = find_cabinet_file(basename, cab->prevname))) {
-      fprintf(stderr, "%s: can't find %s\n", basename, cab->prevname);
-      break;
+    printf("prevname=%s\n", cab->prevname);
+    if (IS_STDIN(basename)) {
+      /* REVISIT: 1st arg "basecab" shuld be first cab(=search while file) */
+      if (!tname || !(cab2 = find_cabinet_from_list(basecab, tname, 1))) {
+        fprintf(stderr, "%s: can't find %s\n", basename, cab->prevname);
+        break;
+      }
+      name = cab->prevname;
+      /* prevcab always basecab? */
+      //tname = cab->prevname;
+    } else {
+      if (!(name = find_cabinet_file(basename, cab->prevname))) {
+        fprintf(stderr, "%s: can't find %s\n", basename, cab->prevname);
+        break;
+      }
     }
     if (args.single && !recall_file(cab_args, name, NULL)) break;
     if (!args.quiet) {
       printf("%s: extends backwards to %s (%s)\n", basename,
              cab->prevname, cab->previnfo);
     }
-    if (!(cab2 = cabd->open(cabd,name)) || cabd->prepend(cabd, cab, cab2)) {
+    if (IS_STDIN(basename)) { 
+      if (!cab2 || cabd->prepend(cabd, cab, cab2)) {
+        fprintf(stderr, "%s: can't prepend %s: %s\n", basename,
+                cab->prevname, cab_error(cabd));
+        break;
+      }
+      /* remove cab2 from list */
+      if (cab2->next) cab2->next->prev = cab2->prev;
+      cab2->prev->next = cab2->next;
+    } else if (!(cab2 = cabd->open(cabd,name)) || cabd->prepend(cabd, cab, cab2)) {
       fprintf(stderr, "%s: can't prepend %s: %s\n", basename,
               cab->prevname, cab_error(cabd));
       if (cab2) cabd->close(cabd, cab2);
@@ -610,17 +640,38 @@ static void load_spanning_cabinets(struct mscabd_cabinet *basecab,
   }
 
   /* load any spanning cabinets -- forwards */
+  tname = args.stdin_fname;
   for (cab = basecab; cab->flags & MSCAB_HDR_NEXTCAB; cab = cab->nextcab) {
-    if (!(name = find_cabinet_file(basename, cab->nextname))) {
-      fprintf(stderr, "%s: can't find %s\n", basename, cab->nextname);
-      break;
+    if (IS_STDIN(basename)) {
+      /* REVISIT: 1st arg "basecab" shuld be first cab(=search while file) */
+      if (!tname || !(cab2 = find_cabinet_from_list(basecab, tname, 0))) {
+        fprintf(stderr, "%s: can't find %s\n", basename, cab->nextname);
+        break;
+      }
+      name = cab->nextname;
+      /* prevcab always basecab? */
+      //tname = cab->nextname;
+    } else {
+      if (!(name = find_cabinet_file(basename, cab->nextname))) {
+        fprintf(stderr, "%s: can't find %s\n", basename, cab->nextname);
+        break;
+      }
     }
     if (args.single && !recall_file(cab_args, name, NULL)) break;
     if (!args.quiet) {
       printf("%s: extends to %s (%s)\n", basename,
              cab->nextname, cab->nextinfo);
     }
-    if (!(cab2 = cabd->open(cabd,name)) || cabd->append(cabd, cab, cab2)) {
+    if (IS_STDIN(basename)) {
+      if (!cab2 || cabd->append(cabd, cab, cab2)) {
+        fprintf(stderr, "%s: can't append %s: %s\n", basename,
+                cab->prevname, cab_error(cabd));
+        break;
+      }
+      /* remove cab2 from list */
+      if (cab2->next) cab2->next->prev = cab2->prev;
+      cab2->prev->next = cab2->next;
+    } else if (!(cab2 = cabd->open(cabd,name)) || cabd->append(cabd, cab, cab2)) {
       fprintf(stderr, "%s: can't append %s: %s\n", basename,
               cab->nextname, cab_error(cabd));
       if (cab2) cabd->close(cabd, cab2);
@@ -690,6 +741,25 @@ static char *find_cabinet_file(char *origcab, char *cabname) {
   }
 
   return cab;
+}
+
+static struct mscabd_cabinet *find_cabinet_from_list(
+    struct mscabd_cabinet *basecab, char *basename, 
+    int reverse_flag)
+{
+  struct mscabd_cabinet *cab;
+  for (cab = basecab; cab; cab = cab->next) {
+    if (reverse_flag && cab->flags & MSCAB_HDR_NEXTCAB) {
+      if (strncmp(cab->nextname, basename, strlen(cab->nextname)) == 0) {
+        return cab;
+      }
+    } else if (!reverse_flag && cab->flags & MSCAB_HDR_PREVCAB){
+      if (strncmp(cab->prevname, basename, strlen(cab->prevname)) == 0) {
+        return cab;
+      }
+    }
+  }
+  return NULL;
 }
 
 /**
@@ -1236,6 +1306,7 @@ static void *cabx_alloc(struct mspack_system *this, size_t bytes) {
 }
 static void cabx_free(void *buffer) {
   free(buffer);
+  buffer = NULL;
 }
 static void cabx_copy(void *src, void *dest, size_t bytes) {
   memcpy(dest, src, bytes);

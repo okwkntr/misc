@@ -1,3 +1,6 @@
+2016-09-18  okwkntr 
+	* cabextract.c and other: Support extract separated files from stdin.
+
 2016-06-29  okwkntr 
 	* cabextract.c and other: Add cabxbuf_xxx for allow to read from
 	stdin. Not to show some messages with -q option.

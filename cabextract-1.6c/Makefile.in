@@ -81,11 +81,12 @@ POST_UNINSTALL = :
 bin_PROGRAMS = cabextract$(EXEEXT)
 noinst_PROGRAMS = src/cabinfo$(EXEEXT)
 subdir = .
-DIST_COMMON = INSTALL NEWS README AUTHORS ChangeLog COPYING \
+DIST_COMMON = INSTALL NEWS README AUTHORS ChangeLog \
 	$(srcdir)/Makefile.in $(srcdir)/Makefile.am \
 	$(top_srcdir)/configure $(am__configure_deps) \
 	$(srcdir)/config.h.in $(srcdir)/cabextract.spec.in mktime.c \
-	getopt.c getopt1.c fnmatch.c TODO compile install-sh missing
+	getopt.c fnmatch.c getopt1.c COPYING TODO compile install-sh \
+	missing
 ACLOCAL_M4 = $(top_srcdir)/aclocal.m4
 am__aclocal_m4_deps = $(top_srcdir)/acinclude.m4 \
 	$(top_srcdir)/configure.ac

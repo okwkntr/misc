@@ -80,8 +80,8 @@ static struct mscabd_cabinet *cabd_search(
   struct mscab_decompressor *base, const char *filename);
 static int cabd_find(
   struct mscab_decompressor_p *self, unsigned char *buf,
-  struct mspack_file *fh, const char *filename, off_t flen,
-  off_t *firstlen, struct mscabd_cabinet_p **firstcab);
+  struct mspack_file *fh, const char *filename, 
+  off_t flen, off_t *firstlen, struct mscabd_cabinet_p **firstcab);
 
 static int cabd_prepend(
   struct mscab_decompressor *base, struct mscabd_cabinet *cab,
@@ -617,8 +617,8 @@ static struct mscabd_cabinet *cabd_search(struct mscab_decompressor *base,
 }
 
 static int cabd_find(struct mscab_decompressor_p *self, unsigned char *buf,
-                     struct mspack_file *fh, const char *filename, off_t flen,
-                     off_t *firstlen, struct mscabd_cabinet_p **firstcab)
+                     struct mspack_file *fh, const char *filename,
+                     off_t flen, off_t *firstlen, struct mscabd_cabinet_p **firstcab)
 {
   struct mscabd_cabinet_p *cab, *link = NULL;
   off_t caboff, offset, length;
@@ -723,7 +723,10 @@ static int cabd_find(struct mscab_decompressor_p *self, unsigned char *buf,
 
             /* link the cab into the list */
             if (!link) *firstcab = cab;
-            else link->base.next = (struct mscabd_cabinet *) cab;
+            else {
+              link->base.next = (struct mscabd_cabinet *) cab;
+              ((struct mscabd_cabinet *)cab)->prev = &link->base;
+            }
             link = cab;
 
             /* cause the search to restart after this cab's data. */
